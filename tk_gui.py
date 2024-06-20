@@ -2,28 +2,41 @@ from tkinter import *
 import tkintermapview
 import requests
 from bs4 import BeautifulSoup
+import psycopg2
 
+db_params = psycopg2.connect(
+    user="postgres", database="postgres", host="localhost", port="5432", password="geoinformatyka"
+)
 users: list = []
 
 
 class User:
-    def __init__(self, name, surname, posts, location):
+    def __init__(self, name, surname, posts, location, coords):
         self.name = name
         self.surname = surname
         self.posts = posts
         self.location = location
-        self.coords = self.get_coordinates()
-        self.marker = map_widget.set_marker(self.coords[0],self.coords[1])
-    def get_coordinates(self):
-        url: str = f'https://pl.wikipedia.org/wiki/{self.location}'
-        response = requests.get(url)
+        self.coords = coords
+        self.marker = map_widget.set_marker(float(self.coords.split(' ')[1][0:-1]),
+                                            float(self.coords.split(' ')[0][6:]))
 
-        response_html = BeautifulSoup(response.text, 'html.parser')
 
-        response_html_lat  = float(response_html.select('.latitude')[1].text.replace(',', '.'))
-        response_html_lng = float(response_html.select('.longitude')[1].text.replace(',', '.'))
-        print( [response_html_lat, response_html_lng])
-        return [response_html_lat, response_html_lng]
+def get_coordinates(location: str) -> list:
+    """
+    Komentarz
+    :param location:
+    :return:
+    """
+    url: str = f'https://pl.wikipedia.org/wiki/{location}'
+    response = requests.get(url)
+
+    response_html = BeautifulSoup(response.text, 'html.parser')
+
+    response_html_lat = float(response_html.select('.latitude')[1].text.replace(',', '.'))
+    response_html_lng = float(response_html.select('.longitude')[1].text.replace(',', '.'))
+    print([response_html_lat, response_html_lng])
+    return [response_html_lat, response_html_lng]
+
 
 def add_user():
     name: str = entry_name.get()
@@ -31,15 +44,23 @@ def add_user():
     posts: str = entry_posts.get()
     location: str = entry_location.get()
     # new_user: dict = {'name': name, 'surname': surname, 'posts': posts, 'location': location}
-    new_user = User(name, surname, posts, location)
-    users.append(new_user)
-    show_users()
+    # new_user = User(name, surname, posts, location)
+
     entry_name.delete(0, END)
     entry_surname.delete(0, END)
     entry_posts.delete(0, END)
     entry_location.delete(0, END)
 
     entry_name.focus()
+
+    longitude, latitude = get_coordinates(location)
+    cursor = db_params.cursor()
+    sql = f"INSERT INTO public.users(name, surname, posts, location, cords) VALUES('{name}', '{surname}',{posts}, '{location}', 'SRID=4326;POINT({latitude} {longitude})');"
+    cursor.execute(sql)
+    db_params.commit()
+    cursor.close()
+    show_users()
+
 
 def user_details():
     i = listbox_lista_obiektow.index(ACTIVE)
@@ -48,45 +69,70 @@ def user_details():
     label_surname_szczegoly_obiektu_wartosc.config(text=users[i].surname)
     label_posts_szczegoly_obiektu_wartosc.config(text=users[i].posts)
     label_location_szczegoly_obiektu_wartosc.config(text=users[i].location)
-    map_widget.set_position(users[i].coords[0],users[i].coords[1])
+    map_widget.set_position(users[i].coords[0], users[i].coords[1])
     map_widget.set_zoom(12)
 
+
 def remove_user():
-    i=listbox_lista_obiektow.index(ACTIVE)
+    i = listbox_lista_obiektow.index(ACTIVE)
+    cursor = db_params.cursor()
+    sql = f"DELETE FROM public.users WHERE name='{users[i].name}';"
+    cursor.execute(sql)
+    db_params.commit()
+    cursor.close()
     users[i].marker.delete()
     users.pop(i)
     show_users()
 
+
 def show_users():
     listbox_lista_obiektow.delete(0, END)
-    for idx, user in enumerate(users):
-        listbox_lista_obiektow.insert(idx, f'{user.name} {user.surname}')
+    for user in users:
+        user.marker.delete()
+    cursor = db_params.cursor()
+    sql = f"SELECT id,name,surname,posts,location,st_astext(cords) FROM public.users"
+    cursor.execute(sql)
+    users_db = cursor.fetchall()
+    cursor.close()
+    for idx, user in enumerate(users_db):
+        listbox_lista_obiektow.insert(idx, f'{user}')
+        new_user = User(user[1], user[2], user[3], user[4], user[5])
+        users.append(new_user)
+
 
 def edit_user():
     i = listbox_lista_obiektow.index(ACTIVE)
     print(users[i])
-    entry_name.insert(0,users[i].name)
-    entry_surname.insert(0,users[i].surname)
-    entry_posts.insert(0,users[i].posts)
-    entry_location.insert(0,users[i].location)
-    button_dodaj_obiekt.config(text='Zapisz zmiany',command=lambda: update_user(i))
-def update_user(i):
-    users[i].name= entry_name.get()
-    users[i].surname= entry_surname.get()
-    users[i].posts= entry_posts.get()
-    users[i].location= entry_location.get()
+    entry_name.insert(0, users[i].name)
+    entry_surname.insert(0, users[i].surname)
+    entry_posts.insert(0, users[i].posts)
+    entry_location.insert(0, users[i].location)
+    button_dodaj_obiekt.config(text='Zapisz zmiany', command=lambda: update_user(i))
 
-    button_dodaj_obiekt.config(text='Dodaj', command= add_user)
+
+def update_user(i):
+    users[i].name = entry_name.get()
+    users[i].surname = entry_surname.get()
+    users[i].posts = entry_posts.get()
+    users[i].location = entry_location.get()
+
+    button_dodaj_obiekt.config(text='Dodaj', command=add_user)
 
     users[i].marker.delete()
-    users[i].coords=User.get_coordinates(users[i])
-    users[i].marker=map_widget.set_marker(users[i].coords[0],users[i].coords[1])
+    users[i].coords = get_coordinates(users[i].location)
+    users[i].marker = map_widget.set_marker(users[i].coords[0], users[i].coords[1])
+    cursor = db_params.cursor()
+    sql = f"UPDATE public.users SET  name='{users[i].name}', surname='{users[i].surname}', posts='{users[i].posts}', location='{users[i].location}', cords='SRID=4326;POINT({users[i].coords[1]} {users[i].coords[0]})' WHERE name='{users[i].name}';"
+    cursor.execute(sql)
+    db_params.commit()
+    cursor.close()
     show_users()
     entry_name.delete(0, END)
     entry_surname.delete(0, END)
     entry_posts.delete(0, END)
     entry_location.delete(0, END)
     entry_name.focus()
+
 
 root = Tk()
 root.title('mapapp')
@@ -105,9 +151,9 @@ ramka_mapa.grid(row=2, column=0, columnspan=8)
 # ramka_lista_obiektow
 label_lista_obiektow = Label(ramka_lista_obiektow, text="Lista obiektów: ")
 listbox_lista_obiektow = Listbox(ramka_lista_obiektow)
-button_pokaz_szczegoly = Button(ramka_lista_obiektow, text='Pokaż szczegóły',command=user_details)
-button_usun_obiekt = Button(ramka_lista_obiektow, text='Usuń obiekt',command=remove_user)
-button_edytuj_obiekt = Button(ramka_lista_obiektow, text='Edytuj obiekt',command=edit_user)
+button_pokaz_szczegoly = Button(ramka_lista_obiektow, text='Pokaż szczegóły', command=user_details)
+button_usun_obiekt = Button(ramka_lista_obiektow, text='Usuń obiekt', command=remove_user)
+button_edytuj_obiekt = Button(ramka_lista_obiektow, text='Edytuj obiekt', command=edit_user)
 
 label_lista_obiektow.grid(row=0, column=0, columnspan=3)
 listbox_lista_obiektow.grid(row=1, column=0, columnspan=3)
